@@ -184,6 +184,24 @@ class GoogleDocReaderTool(BaseTool):
         )
         return build('docs', 'v1', credentials=credentials)
 
+    def _extract_text_from_elements(self, elements) -> str:
+        texts = []
+        for element in elements:
+            if 'paragraph' in element:
+                for text_element in element['paragraph'].get('elements', []):
+                    tr = text_element.get('textRun')
+                    if tr and 'content' in tr:
+                        texts.append(tr['content'])
+            elif 'table' in element:
+                table = element['table']
+                for row in table.get('tableRows', []):
+                    for cell in row.get('tableCells', []):
+                        texts.append(self._extract_text_from_elements(cell.get('content', [])))
+            elif 'tableOfContents' in element:
+                toc = element['tableOfContents']
+                texts.append(self._extract_text_from_elements(toc.get('content', [])))
+        return ''.join(texts)
+
     def _run(self, doc_url: str) -> str:
         """
         Read content from a Google Doc
@@ -204,19 +222,13 @@ class GoogleDocReaderTool(BaseTool):
             # Get the document
             document = service.documents().get(documentId=doc_id).execute()
             
-            # Extract text content
-            content = []
-            for element in document.get('body', {}).get('content', []):
-                if 'paragraph' in element:
-                    for text_element in element['paragraph'].get('elements', []):
-                        if 'textRun' in text_element:
-                            content.append(text_element['textRun'].get('content', ''))
-            
-            full_content = ''.join(content)
-            
-            if not full_content:
+            # Extract text content from paragraphs, tables, and TOC
+            body_content = document.get('body', {}).get('content', [])
+            full_content = self._extract_text_from_elements(body_content)
+
+            if not full_content.strip():
                 return "No content found in the document"
-            
+
             return full_content
             
         except ValueError as e:
