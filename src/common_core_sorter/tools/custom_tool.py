@@ -28,8 +28,9 @@ from io import BytesIO
 class GoogleSheetsWriterInput(BaseModel):
     """Schema for Google Sheets write operation parameters"""
     spreadsheet_id: str = Field(description="The ID of the Google Spreadsheet")
-    range: str = Field(description="The range to write to (e.g. 'Sheet1!A1:D10')")
-    values: List[List[str]] = Field(description="The values to write to the sheet")
+    column_a_value: str = Field(description="The value in column A to identify the row")
+    column_letter: str = Field(description="The column letter to write to (e.g., 'P')")
+    value: str = Field(description="The value to write")
 
 
 class GoogleSheetsWriterTool(BaseTool):
@@ -69,14 +70,15 @@ class GoogleSheetsWriterTool(BaseTool):
         )
         return build('sheets', 'v4', credentials=credentials)
 
-    def _run(self, spreadsheet_id: str, range: str, values: List[List[str]]) -> str:
+    def _run(self, spreadsheet_id: str, column_a_value: str, column_letter: str, value: str) -> str:
         """
-        Write data to Google Sheets
+        Write data to a specific cell by finding the row with matching column A value
         
         Args:
             spreadsheet_id: The ID of the Google Spreadsheet
-            range: The range to write to
-            values: The values to write
+            column_a_value: The value to search for in column A
+            column_letter: The column letter to write to (e.g., 'P')
+            value: The value to write
             
         Returns:
             Status message
@@ -85,20 +87,44 @@ class GoogleSheetsWriterTool(BaseTool):
             service = self._initialize_sheets_service()
             sheet = service.spreadsheets()
             
-            # Append the data to the sheet
-            result = sheet.values().append(
+            # First, get all values in column A to find the correct row
+            tab_name = os.getenv('SHEETS_TAB_NAME', 'Sheet1')
+            # Quote the tab name in case it contains spaces/special characters
+            quoted_tab = f"'{tab_name}'"
+            result = sheet.values().get(
                 spreadsheetId=spreadsheet_id,
-                range=range,
-                valueInputOption='RAW',
-                insertDataOption='INSERT_ROWS',
-                body={'values': values}
+                range=f"{quoted_tab}!A:A"
             ).execute()
             
-            updates = result.get('updates', {})
-            rows_updated = updates.get('updatedRows', 0)
+            column_a_values = result.get('values', [])
             
-            return f"Successfully wrote {rows_updated} rows to Google Sheets"
+            # Find the row number where column A matches our value
+            row_number = None
+            for idx, row in enumerate(column_a_values):
+                if row and str(row[0]) == str(column_a_value):
+                    row_number = idx + 1  # Sheets are 1-indexed
+                    break
             
+            if row_number is None:
+                return f"Error: Could not find row with column A value '{column_a_value}'"
+            
+            # Construct the range for the target cell
+            target_range = f"{quoted_tab}!{column_letter}{row_number}"
+            
+            # Write the value to the target cell
+            body = {
+                'values': [[value]]
+            }
+            
+            sheet.values().update(
+                spreadsheetId=spreadsheet_id,
+                range=target_range,
+                valueInputOption='RAW',
+                body=body
+            ).execute()
+            
+            return f"Successfully wrote to cell {target_range} (row where column A = '{column_a_value}')"
+        
         except Exception as e:
             return f"Error writing to Google Sheets: {str(e)}"
 
